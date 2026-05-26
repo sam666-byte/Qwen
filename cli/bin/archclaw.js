@@ -24,9 +24,10 @@ const QWEN_CONFIG = {
   freeLimit: '2,000 requests/day',
 };
 
-// AI Tools registry (Qwen-first)
+// AI Tools registry (Qwen-first, DeepSeek added)
 const AI_TOOLS = [
   { id: 'qwen',      name: 'Qwen Code',     cmd: 'qwen',      pkg: '@qwen-code/qwen-code', desc: "Qwen's official coding CLI", auth: 'qwen-oauth', port: null },
+  { id: 'deepseek',  name: 'DeepSeek',      cmd: 'deepseek',  pkg: '@deepseek-ai/deepseek-code', desc: 'DeepSeek coding assistant', auth: 'api-key', port: null },
   { id: 'zeroclaw',  name: 'ZeroClaw',      cmd: 'zeroclaw',  pkg: 'zeroclaw',             desc: 'Lightweight AI agent (<5MB RAM)', auth: 'any', port: 3000 },
   { id: 'openclaw',  name: 'OpenClaw',      cmd: 'openclaw',  pkg: 'openclaw',             desc: 'Full AI gateway + hardware', auth: 'any', port: 18789 },
   { id: 'aider',     name: 'Aider',         cmd: 'aider',     pkg: 'aider-chat',           desc: 'AI pair programming', auth: 'any', port: null },
@@ -34,6 +35,14 @@ const AI_TOOLS = [
   { id: 'gemini',    name: 'Gemini CLI',    cmd: 'gemini',    pkg: '@anthropic-ai/gemini-cli', desc: "Google's coding CLI", auth: 'api-key', port: null },
   { id: 'codex',     name: 'Codex CLI',     cmd: 'codex',     pkg: '@openai/codex',        desc: "OpenAI's coding CLI", auth: 'api-key', port: null },
 ];
+
+// DeepSeek config
+const DEEPSEEK_CONFIG = {
+  siteUrl: 'https://platform.deepseek.com',
+  apiKeysUrl: 'https://platform.deepseek.com/api_keys',
+  docsUrl: 'https://api-docs.deepseek.com',
+  models: ['deepseek-chat', 'deepseek-reasoner'],
+}
 
 program
   .name('archclaw')
@@ -51,7 +60,7 @@ program
 
 program
   .command('auth')
-  .description('Manage Qwen OAuth (FREE, 2,000 req/day, no credit card)')
+  .description('Manage auth: Qwen OAuth (FREE) | DeepSeek session (FREE via chat.deepseek.com)')
   .argument('[action]', 'qwen|status|logout', 'qwen')
   .action(async (action) => {
     const configDir = process.env.HOME + '/.archclaw';
@@ -151,9 +160,171 @@ program
         console.log(chalk.green('\n✓ Token saved!\n'));
         break;
 
+      case 'deepseek':
+        // DeepSeek session management inside auth command
+        const dsAction = program.args[2] || 'login';
+        const configDir2 = process.env.HOME + '/.archclaw';
+        fs.ensureDirSync(configDir2);
+        const dsSessionFile = configDir2 + '/deepseek-session.json';
+
+        switch(dsAction) {
+          case 'login':
+            console.log(chalk.blue('\n🔐 DeepSeek Session Login'));
+            console.log(chalk.green('   FREE • Login via chat.deepseek.com • No API key needed'));
+            console.log(chalk.gray('   Using your chat.deepseek.com account\n'));
+
+            // Check if already logged in
+            if (fs.existsSync(dsSessionFile)) {
+              const session = JSON.parse(fs.readFileSync(dsSessionFile, 'utf8'));
+              if (session.session_cookie) {
+                console.log(chalk.yellow('Already logged in!'));
+                console.log(chalk.gray('   Session active from: ' + new Date(session.saved_at * 1000).toLocaleString()));
+                console.log(chalk.gray('   Model: ' + (session.model || 'deepseek-chat')));
+                const { default: readline } = await import('readline');
+                const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+                const answer = await new Promise(resolve => {
+                  rl.question('Re-login anyway? (y/N): ', resolve);
+                });
+                rl.close();
+                if (answer.toLowerCase() !== 'y') return;
+              }
+            }
+
+            try {
+              await startDeepSeekLogin(dsSessionFile);
+            } catch (e) {
+              console.log(chalk.red(`\n✗ Login failed: ${e.message}`));
+              console.log(chalk.yellow('\nManual steps:'));
+              console.log('  1. Open: https://chat.deepseek.com');
+              console.log('  2. Sign in / create account (FREE)');
+              console.log('  3. Open DevTools → Application → Cookies');
+              console.log('  4. Copy ds_session_id value');
+              console.log('  5. Run: archclaw auth deepseek set-cookie <full-cookie-string>\n');
+            }
+            break;
+
+          case 'status':
+            if (!fs.existsSync(dsSessionFile)) {
+              console.log(chalk.red('\n✗ Not logged in to DeepSeek'));
+              console.log(chalk.yellow('Run: archclaw auth deepseek login\n'));
+              return;
+            }
+            const dsSession = JSON.parse(fs.readFileSync(dsSessionFile, 'utf8'));
+            const savedAt = new Date(dsSession.saved_at * 1000);
+            console.log(chalk.blue('\n🔐 DeepSeek Session Status:'));
+            console.log(chalk.green('   Status: ✓ Active'));
+            console.log(chalk.gray('   Login: FREE via chat.deepseek.com'));
+            console.log(chalk.gray(`   Model: ${dsSession.model || 'deepseek-chat'}`));
+            console.log(chalk.gray(`   Saved: ${savedAt.toLocaleString()}`));
+            console.log(chalk.gray(`   Cookie: ${dsSession.session_cookie ? '✓ ' + dsSession.session_cookie.substring(0, 40) + '...' : '✗ Empty'}`));
+            console.log();
+            break;
+
+          case 'logout':
+            if (fs.existsSync(dsSessionFile)) {
+              fs.removeSync(dsSessionFile);
+              console.log(chalk.green('\n✓ DeepSeek session removed\n'));
+            } else {
+              console.log(chalk.yellow('\nNot logged in\n'));
+            }
+            break;
+
+          case 'set-cookie':
+            const cookieValue = program.args[3];
+            if (!cookieValue) {
+              console.log(chalk.red('\nUsage: archclaw auth deepseek set-cookie "ds_session_id=xxx; other=yyy"'));
+              console.log(chalk.yellow('Get cookie from: chat.deepseek.com → DevTools → Application → Cookies\n'));
+              return;
+            }
+            fs.writeJsonSync(dsSessionFile, {
+              session_cookie: cookieValue,
+              model: 'deepseek-chat',
+              saved_at: Math.floor(Date.now() / 1000),
+            }, { spaces: 2 });
+            console.log(chalk.green('\n✓ DeepSeek session cookie saved!\n'));
+            break;
+
+          default:
+            console.log(chalk.red(`Unknown deepseek action: ${dsAction}\n`));
+        }
+        return; // prevent fallthrough
+
       default:
         console.log(chalk.red(`Unknown action: ${action}\n`));
     }
+  });
+
+// ═══════════════════════════════════════════════
+// DEEPSEEK SESSION AUTH - FREE via chat.deepseek.com
+// ═══════════════════════════════════════════════
+
+// DeepSeek session config
+const DEEPSEEK_SESSION = {
+  loginUrl: 'https://chat.deepseek.com/',
+  apiUrl: 'https://api.deepseek.com/chat/completions',
+  models: ['deepseek-chat', 'deepseek-reasoner'],
+  defaultModel: 'deepseek-chat',
+  description: 'FREE via chat.deepseek.com login',
+};
+
+program
+  .command('deepseek')
+  .description('Launch DeepSeek (FREE with session cookie from chat.deepseek.com)')
+  .option('-m, --model <model>', 'Model to use', 'deepseek-chat')
+  .action(async (options) => {
+    const configDir = process.env.HOME + '/.archclaw';
+    fs.ensureDirSync(configDir);
+    const sessionFile = configDir + '/deepseek-session.json';
+
+    // Check if session exists
+    let sessionCookie = null;
+    if (fs.existsSync(sessionFile)) {
+      const session = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
+      sessionCookie = session.session_cookie;
+      console.log(chalk.green('   ✓ Session cookie loaded'));
+    }
+
+    if (!sessionCookie) {
+      console.log(chalk.yellow('\n🔐 DeepSeek session not configured'));
+      console.log(chalk.blue('FREE login via chat.deepseek.com - no API key needed!\n'));
+      
+      const { default: readline } = await import('readline');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise(resolve => {
+        rl.question('Start browser login now? (Y/n): ', resolve);
+      });
+      rl.close();
+      
+      if (answer.toLowerCase() === 'n') {
+        console.log(chalk.yellow('Run "archclaw auth deepseek" later to login\n'));
+        return;
+      }
+      
+      // Start login flow
+      try {
+        sessionCookie = await startDeepSeekLogin(sessionFile);
+      } catch (e) {
+        console.log(chalk.red(`Login failed: ${e.message}`));
+        console.log(chalk.yellow('\nManual steps:'));
+        console.log('  1. Open https://chat.deepseek.com');
+        console.log('  2. Sign in / create free account');
+        console.log('  3. Open DevTools → Application → Cookies');
+        console.log('  4. Copy ds_session_id value');
+        console.log('  5. Run: archclaw auth deepseek set-cookie <cookie>\n');
+        return;
+      }
+    }
+
+    console.log(chalk.blue(`\n🚀 Launching DeepSeek...`));
+    console.log(chalk.green(`   ✓ Session authenticated (FREE)`));
+    console.log(chalk.green(`   ✓ Model: ${options.model}`));
+    console.log(chalk.gray(`   ✓ Via: chat.deepseek.com\n`));
+
+    launchInArch('deepseek', {
+      DEEPSEEK_SESSION_COOKIE: sessionCookie,
+      DEEPSEEK_MODEL: options.model,
+      DEEPSEEK_API_URL: DEEPSEEK_SESSION.apiUrl,
+    });
   });
 
 // ═══════════════════════════════════════════════
@@ -481,11 +652,28 @@ program
       console.log(`  Qwen OAuth:      ${chalk.red('✗ Not configured')} (FREE, run: archclaw auth qwen)`);
     }
     
+    // Check DeepSeek session
+    const deepseekFile = process.env.HOME + '/.archclaw/deepseek-session.json';
+    if (fs.existsSync(deepseekFile)) {
+      const session = JSON.parse(fs.readFileSync(deepseekFile, 'utf8'));
+      if (session.session_cookie) {
+        console.log(`  DeepSeek Session: ${chalk.green('✓ Active')} (FREE)`);
+        console.log(`                   ${chalk.gray('Model: ' + (session.model || 'deepseek-chat'))}`);
+        if (session.session_cookie.includes('ds_session_id=')) {
+          console.log(`                   ${chalk.gray('Session: ✓ chat.deepseek.com')}`);
+        }
+      } else {
+        console.log(`  DeepSeek Session: ${chalk.yellow('⚠ Empty cookie')}`);
+      }
+    } else {
+      console.log(`  DeepSeek Session: ${chalk.red('✗ Not logged in')} (run: archclaw auth deepseek)`);
+    }
+    
     // Check tools
     console.log(chalk.bold('\n  AI Tools:'));
     AI_TOOLS.forEach(t => {
       const installed = checkToolInstalled(t.cmd);
-      const auth = t.auth === 'qwen-oauth' ? ' [FREE]' : '';
+      const auth = t.auth === 'qwen-oauth' ? ' [FREE]' : t.id === 'deepseek' ? ' [Session]' : '';
       console.log(`    ${t.name.padEnd(18)} ${installed ? chalk.green('✓') : chalk.yellow('—')}${chalk.gray(auth)}`);
     });
     
@@ -529,13 +717,80 @@ program
     
     console.log(chalk.green('\n✓ Setup complete!\n'));
     console.log(chalk.blue('Next:'));
-    console.log(chalk.green('  archclaw auth qwen    # FREE OAuth login'));
-    console.log(chalk.green('  archclaw qwen         # Start coding!\n'));
+    console.log(chalk.green('  archclaw auth qwen             # FREE OAuth (2,000 req/day)'));
+    console.log(chalk.green('  archclaw auth deepseek login   # FREE via chat.deepseek.com'));
+    console.log(chalk.green('  archclaw qwen                  # Start coding with Qwen!'));
+    console.log(chalk.green('  archclaw deepseek              # Start with DeepSeek!\n'));
   });
 
 // ═══════════════════════════════════════════════
 // HELPER FUNCTIONS
 // ═══════════════════════════════════════════════
+
+/**
+ * Start DeepSeek login flow - opens chat.deepseek.com and waits for user
+ * to login, then captures the session cookie manually.
+ */
+async function startDeepSeekLogin(sessionFile) {
+  console.log(chalk.yellow('\nOpening chat.deepseek.com in browser...'));
+  console.log(chalk.gray('1. Sign in to your DeepSeek account (or create free one)'));
+  console.log(chalk.gray('2. After login, copy the ds_session_id cookie'));
+  console.log(chalk.gray('3. Paste it here\n'));
+
+  // Try to open browser
+  const loginUrl = 'https://chat.deepseek.com/';
+  try {
+    execSync(`termux-open-url "${loginUrl}"`, { stdio: 'ignore' });
+  } catch {
+    try {
+      execSync(`am start -a android.intent.action.VIEW -d "${loginUrl}"`, { stdio: 'ignore' });
+    } catch {
+      console.log(chalk.yellow('Could not open browser automatically'));
+    }
+  }
+  console.log(chalk.cyan(`   ${loginUrl}\n`));
+  
+  // Ask user to paste their cookie
+  const { default: readline } = await import('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  
+  console.log(chalk.blue('📋 How to get your cookie:'));
+  console.log('  1. Open DevTools (F12) → Application tab');
+  console.log('  2. Under Storage → Cookies → chat.deepseek.com');
+  console.log('  3. Find "ds_session_id" and copy its VALUE');
+  console.log('  4. Or copy the FULL cookie string and paste below\n');
+  
+  const cookieValue = await new Promise(resolve => {
+    rl.question('Paste your ds_session_id or full cookie string: ', resolve);
+  });
+  rl.close();
+
+  if (!cookieValue || cookieValue.trim().length < 5) {
+    throw new Error('Invalid cookie value');
+  }
+
+  // Build the cookie string
+  let finalCookie = cookieValue.trim();
+  if (!finalCookie.includes('=')) {
+    // User only pasted the value, wrap it
+    finalCookie = `ds_session_id=${finalCookie}`;
+  } else if (!finalCookie.toLowerCase().includes('ds_session_id')) {
+    // Has = but no ds_session_id, prefix it
+    finalCookie = `ds_session_id=${finalCookie}`;
+  }
+
+  // Save session
+  fs.writeJsonSync(sessionFile, {
+    session_cookie: finalCookie,
+    model: 'deepseek-chat',
+    saved_at: Math.floor(Date.now() / 1000),
+  }, { spaces: 2 });
+
+  console.log(chalk.green('\n✓ DeepSeek session saved!'));
+  console.log(chalk.gray('   You can now run: archclaw deepseek\n'));
+  
+  return finalCookie;
+}
 
 /**
  * Start OAuth HTTP server and wait for callback

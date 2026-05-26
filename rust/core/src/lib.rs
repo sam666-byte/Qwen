@@ -14,6 +14,7 @@ pub use config::Config;
 pub use tools::ToolManager;
 pub use proot::ProotManager;
 pub use gateway::GatewayManager;
+pub use auth::deepseek_auth::DeepSeekAuth;
 pub use auth::qwen_oauth::QwenOAuth;
 
 /// Application version
