@@ -168,19 +168,38 @@ class BootstrapManager(
     }
 
     private fun setupLibtalloc() {
-        val target = File("$libDir/libtalloc.so.2")
-        // Check nativeLibDir first (bundled in APK)
+        val libTallocSource = findLibtalloc() ?: return
+        
+        // 1. Create libtalloc.so.2 in libDir (for LD_LIBRARY_PATH fallback)
+        val targetLibDir = File("$libDir/libtalloc.so.2")
+        if (!targetLibDir.exists()) {
+            libTallocSource.copyTo(targetLibDir)
+            targetLibDir.setExecutable(true)
+        }
+        
+        // 2. Also create libtalloc.so.2 in nativeLibDir (same dir as libproot.so)
+        //    Android's dynamic linker on API 24+ ignores LD_LIBRARY_PATH when
+        //    resolving DT_NEEDED for executables. It only searches the same
+        //    directory as the binary. proot needs libtalloc.so.2 there.
+        val targetNative = File("$nativeLibDir/libtalloc.so.2")
+        if (!targetNative.exists()) {
+            try {
+                libTallocSource.copyTo(targetNative)
+                targetNative.setExecutable(true)
+            } catch (_: Exception) {
+                // nativeLibDir may be read-only on some devices; that's OK,
+                // we have the fallback in libDir with LD_LIBRARY_PATH
+            }
+        }
+    }
+    
+    /** Find libtalloc.so from nativeLibDir (bundled) or libDir (downloaded). */
+    private fun findLibtalloc(): File? {
         val nativeSource = File("$nativeLibDir/libtalloc.so")
-        if (nativeSource.exists() && !target.exists()) {
-            nativeSource.copyTo(target)
-            target.setExecutable(true)
-        }
-        // Also check libDir for downloaded libtalloc
+        if (nativeSource.exists()) return nativeSource
         val downloadedSource = File("$libDir/libtalloc.so")
-        if (downloadedSource.exists() && !target.exists()) {
-            downloadedSource.copyTo(target)
-            target.setExecutable(true)
-        }
+        if (downloadedSource.exists()) return downloadedSource
+        return null
     }
 
     fun isBootstrapComplete(): Boolean {

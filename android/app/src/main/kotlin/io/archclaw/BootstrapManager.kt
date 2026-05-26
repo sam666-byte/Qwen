@@ -42,10 +42,27 @@ class BootstrapManager(
 
     private fun setupLibtalloc() {
         val source = File("$nativeLibDir/libtalloc.so")
-        val target = File("$libDir/libtalloc.so.2")
-        if (source.exists() && !target.exists()) {
-            source.copyTo(target)
-            target.setExecutable(true)
+        if (!source.exists()) return
+        
+        // 1. Create libtalloc.so.2 in libDir (for LD_LIBRARY_PATH fallback)
+        val targetLibDir = File("$libDir/libtalloc.so.2")
+        if (!targetLibDir.exists()) {
+            source.copyTo(targetLibDir)
+            targetLibDir.setExecutable(true)
+        }
+        
+        // 2. Also create libtalloc.so.2 in nativeLibDir (same dir as libproot.so)
+        //    Android's dynamic linker on API 24+ ignores LD_LIBRARY_PATH when
+        //    resolving DT_NEEDED for executables. It only searches the same
+        //    directory as the binary. proot needs libtalloc.so.2 there.
+        val targetNative = File("$nativeLibDir/libtalloc.so.2")
+        if (!targetNative.exists()) {
+            try {
+                source.copyTo(targetNative)
+                targetNative.setExecutable(true)
+            } catch (_: Exception) {
+                // nativeLibDir may be read-only on some devices
+            }
         }
     }
 

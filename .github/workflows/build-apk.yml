@@ -65,9 +65,16 @@ jobs:
           loader32=$(find . -name "loader32" -path "*/proot/*" -type f | head -1)
           [ -n "$loader32" ] && cp "$loader32" "$GITHUB_WORKSPACE/$JNILIBS/libprootloader32.so" && chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libprootloader32.so"
           
-          # Copy libtalloc
+          # Copy libtalloc as BOTH libtalloc.so AND libtalloc.so.2
+          # proot is linked against libtalloc.so.2 (SONAME), but Android's
+          # dynamic linker looks for the exact SONAME filename, not libtalloc.so.
           talloc=$(find . -name "libtalloc.so*" -not -name "*.py" -type f | head -1)
-          [ -n "$talloc" ] && cp -L "$talloc" "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so" && chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so"
+          if [ -n "$talloc" ]; then
+            cp -L "$talloc" "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so"
+            chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so"
+            cp -L "$talloc" "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so.2"
+            chmod 755 "$GITHUB_WORKSPACE/$JNILIBS/libtalloc.so.2"
+          fi
           
           rm -rf "$TMP_DIR"
           
