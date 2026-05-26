@@ -32,6 +32,11 @@ class BootstrapManager(
         listOf(rootfsDir, tmpDir, homeDir, configDir, "$homeDir/.openclaw", libDir).forEach {
             File(it).mkdirs()
         }
+        // Copy proot + loaders from nativeLibDir to libDir so they live in
+        // the SAME writable directory as libtalloc.so.2. This is critical:
+        // Android's linker searches the same directory as the executable
+        // for DT_NEEDED libraries — no LD_LIBRARY_PATH hack needed.
+        ensureProotInLibDir()
         // Termux's proot links against libtalloc.so.2 but Android extracts it
         // as libtalloc.so (jniLibs naming convention). Create a copy with the
         // correct SONAME so the dynamic linker finds it.
@@ -40,29 +45,34 @@ class BootstrapManager(
         setupFakeSysdata()
     }
 
+    /** Copy proot + loaders from nativeLibDir to libDir so they co-locate
+        with libtalloc.so.2 (Android linker finds DT_NEEDED in same dir). */
+    private fun ensureProotInLibDir() {
+        fun copyIfMissing(src: String, dst: String) {
+            val srcFile = File(src)
+            if (!srcFile.exists()) return
+            val dstFile = File(dst)
+            if (!dstFile.exists()) {
+                srcFile.copyTo(dstFile)
+                dstFile.setExecutable(true, false)
+            }
+        }
+        copyIfMissing("$nativeLibDir/libproot.so", "$libDir/libproot.so")
+        copyIfMissing("$nativeLibDir/libprootloader.so", "$libDir/libprootloader.so")
+        copyIfMissing("$nativeLibDir/libprootloader32.so", "$libDir/libprootloader32.so")
+    }
+
     private fun setupLibtalloc() {
         val source = File("$nativeLibDir/libtalloc.so")
         if (!source.exists()) return
         
-        // 1. Create libtalloc.so.2 in libDir (for LD_LIBRARY_PATH fallback)
+        // Create libtalloc.so.2 in libDir (same writable directory as
+        // libproot.so, copied by ensureProotInLibDir). Android's linker
+        // searches the same directory as the executable for DT_NEEDED.
         val targetLibDir = File("$libDir/libtalloc.so.2")
         if (!targetLibDir.exists()) {
             source.copyTo(targetLibDir)
             targetLibDir.setExecutable(true)
-        }
-        
-        // 2. Also create libtalloc.so.2 in nativeLibDir (same dir as libproot.so)
-        //    Android's dynamic linker on API 24+ ignores LD_LIBRARY_PATH when
-        //    resolving DT_NEEDED for executables. It only searches the same
-        //    directory as the binary. proot needs libtalloc.so.2 there.
-        val targetNative = File("$nativeLibDir/libtalloc.so.2")
-        if (!targetNative.exists()) {
-            try {
-                source.copyTo(targetNative)
-                targetNative.setExecutable(true)
-            } catch (_: Exception) {
-                // nativeLibDir may be read-only on some devices
-            }
         }
     }
 
