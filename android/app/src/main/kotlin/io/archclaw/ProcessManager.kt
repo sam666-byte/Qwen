@@ -32,6 +32,23 @@ class ProcessManager(
     fun getProotPath(): String = "$nativeLibDir/libproot.so"
 
     // ================================================================
+    // Android dynamic linker path.
+    // On API 24+ (Android 7.0+), LD_LIBRARY_PATH is NOT searched for
+    // DT_NEEDED entries of the main executable. The linker only searches
+    // the same directory as the binary and system library paths. Since
+    // proot needs libtalloc.so.2 (which Android doesn't extract from
+    // jniLibs because it ends in .so.2), we must run proot via the
+    // system dynamic linker, which DOES respect LD_LIBRARY_PATH.
+    // ================================================================
+    private fun getLinkerPath(): String {
+        val arch = ArchUtils.getArch()
+        return when (arch) {
+            "aarch64", "x86_64" -> "/system/bin/linker64"
+            else -> "/system/bin/linker" // arm, x86
+        }
+    }
+
+    // ================================================================
     // Host-side environment for proot binary itself.
     // ONLY proot-specific vars — guest env is set via `env -i` inside
     // the command line, matching proot-distro's approach.
@@ -264,6 +281,12 @@ class ProcessManager(
         pb.environment().putAll(env)
         pb.redirectErrorStream(true)
 
+        // On Android 7.0+, prepend the dynamic linker so LD_LIBRARY_PATH
+        // is respected for proot's DT_NEEDED (libtalloc.so.2).
+        val linkerCmd = mutableListOf(getLinkerPath())
+        linkerCmd.addAll(cmd)
+        pb.command(linkerCmd)
+
         val process = pb.start()
         val output = StringBuilder()
         val errorLines = StringBuilder()
@@ -319,6 +342,12 @@ class ProcessManager(
         pb.environment().clear()
         pb.environment().putAll(env)
         pb.redirectErrorStream(false)
+
+        // On Android 7.0+, prepend the dynamic linker so LD_LIBRARY_PATH
+        // is respected for proot's DT_NEEDED (libtalloc.so.2).
+        val linkerCmd = mutableListOf(getLinkerPath())
+        linkerCmd.addAll(cmd)
+        pb.command(linkerCmd)
 
         return pb.start()
     }
